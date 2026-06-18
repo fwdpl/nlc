@@ -1,0 +1,57 @@
+name: NLC contract
+
+on:
+  schedule:
+    - cron: "0 2,11 * * *"     # 02:00 i 11:00 UTC codziennie (łapie świeże granule MLS)
+  workflow_dispatch: {}         # ręczne uruchomienie z zakładki Actions
+
+permissions:
+  contents: write               # pozwala zacommitować historię contract.json
+
+concurrency:
+  group: nlc-contract
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install deps
+        run: pip install -r requirements.txt
+
+      - name: Build contract
+        env:
+          EARTHDATA_TOKEN: ${{ secrets.EARTHDATA_TOKEN }}
+          NLC_OUT: public/contract.json
+        run: python nlc-worker.py
+
+      - name: Commit history (persystencja dla trybu „stale”)
+        run: |
+          git config user.name  "nlc-bot"
+          git config user.email "nlc-bot@users.noreply.github.com"
+          git add public/contract.json
+          git commit -m "NLC contract $(date -u +%FT%TZ)" || echo "bez zmian"
+          git push || echo "push pominięty"
+
+      - name: Publish to WordPress (SFTP)
+        env:
+          SFTP_HOST: ${{ secrets.SFTP_HOST }}
+          SFTP_USER: ${{ secrets.SFTP_USER }}
+          SFTP_PASS: ${{ secrets.SFTP_PASS }}
+          SFTP_PATH: ${{ secrets.SFTP_PATH }}   # np. /wp-content/uploads/nlc/
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y lftp
+          lftp -u "$SFTP_USER","$SFTP_PASS" sftp://"$SFTP_HOST" -e "
+            set sftp:auto-confirm yes;
+            put -O \"$SFTP_PATH\" public/contract.json;
+            bye"
+
+# Alternatywa bez SFTP: serwuj contract.json przez jsDelivr
+#   data-contract=\"https://cdn.jsdelivr.net/gh/USER/REPO@main/public/contract.json\"
+# (commit z kroku wyżej wystarcza; pamiętaj o ~12 h cache CDN / purge).
