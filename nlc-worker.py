@@ -35,8 +35,8 @@ except ImportError:
 
 # ----------------------------- KONFIGURACJA -----------------------------
 CFG = {
-    "short_name": "ML2T",          # standardowy produkt temperatury MLS (v5). NRT: rozważ "ML2T_NRT".
-    "version": "5",
+    "short_name": "ML2T_NRT",      # NRT temperatury MLS: latencja ~3 h, 7 dni online (standard "ML2T" ma latencję tygodni!).
+    "version": "",                 # puste = CMR dobierze najnowszą wersję NRT
     "poland_bbox": (49.0, 14.0, 55.0, 24.5),   # (lat_min, lon_min, lat_max, lon_max)
     "target_pressure_hpa": 0.0046, # poziom ~mezopauzy / strefy NLC (~83 km)
     "h2o_vmr": 4.0e-6,             # klimatologiczne H2O w mezopauzie [obj.], do frost pointu
@@ -94,20 +94,24 @@ def session():
     return s
 
 def find_granules(s, days):
-    end = dt.datetime.utcnow()
+    end = dt.datetime.now(dt.timezone.utc)
     start = end - dt.timedelta(days=days)
+    la0, lo0, la1, lo1 = CFG["poland_bbox"]
     q = {
-        "short_name": CFG["short_name"], "version": CFG["version"],
+        "short_name": CFG["short_name"],
         "temporal": f"{start:%Y-%m-%dT%H:%M:%SZ},{end:%Y-%m-%dT%H:%M:%SZ}",
-        "page_size": 30, "sort_key": "-start_date",
+        "bounding_box": f"{lo0},{la0},{lo1},{la1}",   # tylko granule przecinające Polskę
+        "page_size": 200, "sort_key": "-start_date",
     }
+    if CFG["version"]:
+        q["version"] = CFG["version"]
     r = s.get(CMR + "?" + urlencode(q), timeout=60); r.raise_for_status()
     out = []
     for e in r.json().get("feed", {}).get("entry", []):
         href = None
         for ln in e.get("links", []):
             h = ln.get("href", "")
-            if h.endswith(".he5") and ("gesdisc" in h or "acdisc" in h):
+            if h.endswith(".he5") and "gesdisc" in h:
                 href = h; break
         if href:
             out.append({"date": e.get("time_start", "")[:10], "href": href})
@@ -127,7 +131,7 @@ def read_he5(path):
         pres = g["Geolocation Fields/Pressure"][:]
     return lat, lon, pres, T, status, quality, conv, prec
 
-def mean_temp_over_poland(path):
+def temps_over_poland(path):
     lat, lon, pres, T, status, quality, conv, prec = read_he5(path)
     lvl = int(np.argmin(np.abs(pres - CFG["target_pressure_hpa"])))
     la0, lo0, la1, lo1 = CFG["poland_bbox"]
@@ -135,10 +139,7 @@ def mean_temp_over_poland(path):
     geo = (lat >= la0) & (lat <= la1) & (lon >= lo0) & (lon <= lo1)
     qual = (status % 2 == 0) & (quality > CFG["quality_min"]) & (conv < CFG["convergence_max"])
     good = geo & qual & (prec[:, lvl] > 0) & (T[:, lvl] > tvmin) & (T[:, lvl] < tvmax)
-    vals = T[good, lvl]
-    if vals.size == 0:
-        return None, float(pres[lvl]), 0
-    return float(np.mean(vals)), float(pres[lvl]), int(vals.size)
+    return T[good, lvl], float(pres[lvl])
 
 # ----------------------------- F10.7 (NOAA SWPC) -----------------------------
 def fetch_f107(s):
@@ -227,28 +228,26 @@ def degrade_previous(prev, now):
 # ----------------------------- MAIN -----------------------------
 def main():
     out = os.environ.get("NLC_OUT", "public/contract.json")
-    now = dt.datetime.utcnow()
+    now = dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)
     s = session()
 
     try:
         grans = find_granules(s, CFG["trend_days"])
         if not grans:
-            raise RuntimeError("CMR nie zwrócił granul ML2T w oknie czasowym.")
-        temps = {}
+            raise RuntimeError(f"CMR nie zwrócił granul {CFG['short_name']} w oknie czasowym.")
+        temps_lists, last_pres = {}, CFG["target_pressure_hpa"]
         with tempfile.TemporaryDirectory() as td:
             for g in grans:
-                day = g["date"]
-                if day in temps:
-                    continue
                 fp = os.path.join(td, os.path.basename(g["href"]))
                 r = s.get(g["href"], timeout=300, allow_redirects=True)
                 r.raise_for_status()
                 with open(fp, "wb") as fh:
                     fh.write(r.content)
-                T, pres_hpa, n = mean_temp_over_poland(fp)
-                if T is not None:
-                    temps[day] = T
-                    last_pres, last_n = pres_hpa, n
+                vals, last_pres = temps_over_poland(fp)
+                if vals.size:
+                    temps_lists.setdefault(g["date"], []).extend(vals.tolist())
+        temps = {d: sum(v) / len(v) for d, v in temps_lists.items() if v}
+        last_n = sum(len(v) for v in temps_lists.values())
         if not temps:
             raise RuntimeError("Brak profili MLS przechodzących ekranowanie nad Polską.")
         f107 = fetch_f107(s)
