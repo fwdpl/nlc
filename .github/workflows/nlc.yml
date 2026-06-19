@@ -39,18 +39,7 @@ jobs:
           git commit -m "NLC contract $(date -u +%FT%TZ)" || echo "bez zmian"
           git push || echo "push pominięty"
 
-      - name: Publish to WordPress (SFTP)
-        env:
-          SFTP_HOST: ${{ secrets.SFTP_HOST }}
-          SFTP_USER: ${{ secrets.SFTP_USER }}
-          SFTP_PASS: ${{ secrets.SFTP_PASS }}
-          SFTP_PATH: ${{ secrets.SFTP_PATH }}   # np. /wp-content/uploads/nlc/
-        run: |
-          sudo apt-get update -qq && sudo apt-get install -y lftp
-          lftp -u "$SFTP_USER","$SFTP_PASS" sftp://"$SFTP_HOST" -e "
-            set sftp:auto-confirm yes;
-            put -O \"$SFTP_PATH\" public/contract.json;
-            bye"
+
 
 # Alternatywa bez SFTP: serwuj contract.json przez jsDelivr
 #   data-contract=\"https://cdn.jsdelivr.net/gh/USER/REPO@main/public/contract.json\"
