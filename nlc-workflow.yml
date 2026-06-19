@@ -1,0 +1,47 @@
+name: NLC contract
+
+on:
+  schedule:
+    - cron: "0 2,11 * * *"     # 02:00 i 11:00 UTC codziennie (świeże granule NRT)
+  workflow_dispatch: {}         # ręczne uruchomienie z zakładki Actions
+
+permissions:
+  contents: write               # commit historii contract.json
+
+concurrency:
+  group: nlc-contract
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install deps
+        run: pip install -r requirements.txt
+
+      - name: Build contract
+        env:
+          EARTHDATA_TOKEN: ${{ secrets.EARTHDATA_TOKEN }}
+          NLC_OUT: public/contract.json
+        run: python nlc-worker.py
+
+      - name: Commit & purge jsDelivr
+        run: |
+          git config user.name  "nlc-bot"
+          git config user.email "nlc-bot@users.noreply.github.com"
+          git add public/contract.json
+          git commit -m "NLC contract $(date -u +%FT%TZ)" || { echo "bez zmian — koniec"; exit 0; }
+          git push
+          # odśwież cache jsDelivr, żeby widget dostał świeży plik od razu (a nie po ~12 h)
+          sleep 5
+          curl -s "https://purge.jsdelivr.net/gh/fwdpl/nlc@main/public/contract.json" || true
+
+# Widget czyta kontrakt z jsDelivr (repo publiczne):
+#   data-contract="https://cdn.jsdelivr.net/gh/fwdpl/nlc@main/public/contract.json"
+# Krok SFTP i sekrety SFTP_* nie są już potrzebne — możesz je usunąć w Settings → Secrets.
