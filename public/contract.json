@@ -1,6 +1,6 @@
 {
   "schema_version": "2.0",
-  "generated_at": "2026-06-18T23:50:31Z",
+  "generated_at": "2026-06-19T01:04:28Z",
   "region": "PL",
   "season": {
     "in_season": true,
@@ -17,5 +17,5 @@
   "mesopause": {},
   "solar": {},
   "recent_sightings": [],
-  "notes": "Brak danych MLS przy pierwszym uruchomieniu."
+  "notes": "STALE: brak świeżych danych MLS — odtworzono poprzedni odczyt, sezon zaktualizowany."
 }
