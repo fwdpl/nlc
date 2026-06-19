@@ -94,6 +94,7 @@ def session():
     return s
 
 def find_granules(s, days):
+    import time
     end = dt.datetime.now(dt.timezone.utc)
     start = end - dt.timedelta(days=days)
     la0, lo0, la1, lo1 = CFG["poland_bbox"]
@@ -101,21 +102,28 @@ def find_granules(s, days):
         "short_name": CFG["short_name"],
         "temporal": f"{start:%Y-%m-%dT%H:%M:%SZ},{end:%Y-%m-%dT%H:%M:%SZ}",
         "bounding_box": f"{lo0},{la0},{lo1},{la1}",   # tylko granule przecinające Polskę
-        "page_size": 200, "sort_key": "-start_date",
+        "page_size": 100, "sort_key": "-start_date",
     }
     if CFG["version"]:
         q["version"] = CFG["version"]
-    r = s.get(CMR + "?" + urlencode(q), timeout=60); r.raise_for_status()
-    out = []
-    for e in r.json().get("feed", {}).get("entry", []):
-        href = None
-        for ln in e.get("links", []):
-            h = ln.get("href", "")
-            if h.endswith(".he5") and "gesdisc" in h:
-                href = h; break
-        if href:
-            out.append({"date": e.get("time_start", "")[:10], "href": href})
-    return out
+    url = CMR + "?" + urlencode(q)
+    last = None
+    for attempt in range(3):                          # 3 próby — CMR bywa chwilowo przeciążony
+        try:
+            r = s.get(url, timeout=120); r.raise_for_status()
+            out = []
+            for e in r.json().get("feed", {}).get("entry", []):
+                for ln in e.get("links", []):
+                    h = ln.get("href", "")
+                    if h.endswith(".he5") and "gesdisc" in h:
+                        out.append({"date": e.get("time_start", "")[:10], "href": h})
+                        break
+            return out
+        except Exception as ex:
+            last = ex
+            print(f"[worker] CMR próba {attempt + 1}/3 nieudana: {ex}", file=sys.stderr)
+            time.sleep(5 * (attempt + 1))
+    raise last
 
 def read_he5(path):
     """Zwraca (lat[N], lon[N], pressure[L], T[N,L], status[N], quality[N], conv[N], prec[N,L])."""
