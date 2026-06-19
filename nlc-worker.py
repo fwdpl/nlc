@@ -42,9 +42,9 @@ CFG = {
     "h2o_vmr": 4.0e-6,             # klimatologiczne H2O w mezopauzie [obj.], do frost pointu
     "trend_days": 3,               # ile dni wstecz (NRT trzyma 7 dni online)
     "max_granules": 350,           # górny limit pobieranych plików NRT na bieg (bez filtra przestrzennego CMR)
-    # progi ekranowania jakości (per MLS Data Quality Document, do ew. dostrojenia)
-    "quality_min": 0.2,
-    "convergence_max": 1.03,
+    # progi ekranowania jakości — poluzowane pod NRT (uproszczony model: wyższy Convergence, niższy Quality)
+    "quality_min": 0.0,
+    "convergence_max": 2.0,
     "temp_valid": (110.0, 260.0),
     # mapowania czynników
     "ftemp_k": 1.8,                # ostrość sigmoidy wokół frost pointu [K]
@@ -146,8 +146,17 @@ def temps_over_poland(path):
     la0, lo0, la1, lo1 = CFG["poland_bbox"]
     tvmin, tvmax = CFG["temp_valid"]
     geo = (lat >= la0) & (lat <= la1) & (lon >= lo0) & (lon <= lo1)
-    qual = (status % 2 == 0) & (quality > CFG["quality_min"]) & (conv < CFG["convergence_max"])
-    good = geo & qual & (prec[:, lvl] > 0) & (T[:, lvl] > tvmin) & (T[:, lvl] < tvmax)
+    if geo.sum() == 0:
+        return np.array([]), float(pres[lvl])
+    # diagnostyka: ile profili nad Polską przechodzi każdy warunek z osobna
+    g_status = geo & (status % 2 == 0)
+    g_qual = g_status & (quality > CFG["quality_min"])
+    g_conv = g_qual & (conv < CFG["convergence_max"])
+    g_prec = g_conv & (prec[:, lvl] > 0)
+    good = g_prec & (T[:, lvl] > tvmin) & (T[:, lvl] < tvmax)
+    print(f"[worker]   nad PL={int(geo.sum())} status_ok={int(g_status.sum())} "
+          f"+quality={int(g_qual.sum())} +conv={int(g_conv.sum())} +prec={int(g_prec.sum())} "
+          f"final={int(good.sum())}", file=sys.stderr)
     return T[good, lvl], float(pres[lvl])
 
 # ----------------------------- F10.7 (NOAA SWPC) -----------------------------
