@@ -42,8 +42,8 @@ CFG = {
     "h2o_vmr": 4.0e-6,             # klimatologiczne H2O w mezopauzie [obj.], do frost pointu
     "trend_days": 3,               # ile dni wstecz (NRT trzyma 7 dni online)
     "max_granules": 350,           # górny limit pobieranych plików NRT na bieg (bez filtra przestrzennego CMR)
-    # progi ekranowania jakości — poluzowane pod NRT (uproszczony model: wyższy Convergence, niższy Quality)
-    "quality_min": 0.0,
+    # progi ekranowania jakości — NRT: pole Quality bywa zerowe (uproszczony model), więc je pomijamy
+    "quality_min": -1e9,           # warunek Quality wyłączony (w NRT bywa 0 lub wartość wypełniająca)
     "convergence_max": 2.0,
     "temp_valid": (110.0, 260.0),
     # mapowania czynników
