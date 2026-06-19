@@ -40,7 +40,8 @@ CFG = {
     "poland_bbox": (49.0, 14.0, 55.0, 24.5),   # (lat_min, lon_min, lat_max, lon_max)
     "target_pressure_hpa": 0.0046, # poziom ~mezopauzy / strefy NLC (~83 km)
     "h2o_vmr": 4.0e-6,             # klimatologiczne H2O w mezopauzie [obj.], do frost pointu
-    "trend_days": 4,               # ile dni wstecz do policzenia trendu
+    "trend_days": 3,               # ile dni wstecz (NRT trzyma 7 dni online)
+    "max_granules": 350,           # górny limit pobieranych plików NRT na bieg (bez filtra przestrzennego CMR)
     # progi ekranowania jakości (per MLS Data Quality Document, do ew. dostrojenia)
     "quality_min": 0.2,
     "convergence_max": 1.03,
@@ -97,18 +98,18 @@ def find_granules(s, days):
     import time
     end = dt.datetime.now(dt.timezone.utc)
     start = end - dt.timedelta(days=days)
-    la0, lo0, la1, lo1 = CFG["poland_bbox"]
     q = {
         "short_name": CFG["short_name"],
         "temporal": f"{start:%Y-%m-%dT%H:%M:%SZ},{end:%Y-%m-%dT%H:%M:%SZ}",
-        "bounding_box": f"{lo0},{la0},{lo1},{la1}",   # tylko granule przecinające Polskę
-        "page_size": 100, "sort_key": "-start_date",
+        "page_size": 500, "sort_key": "-start_date",
+        # UWAGA: bez bounding_box — CMR zwraca 500 dla granul NRT z filtrem przestrzennym.
+        # Polskę odfiltrowujemy po pobraniu (temps_over_poland). Limit pobrań niżej w main.
     }
     if CFG["version"]:
         q["version"] = CFG["version"]
     url = CMR + "?" + urlencode(q)
     last = None
-    for attempt in range(3):                          # 3 próby — CMR bywa chwilowo przeciążony
+    for attempt in range(3):
         try:
             r = s.get(url, timeout=120); r.raise_for_status()
             out = []
@@ -243,17 +244,26 @@ def main():
         grans = find_granules(s, CFG["trend_days"])
         if not grans:
             raise RuntimeError(f"CMR nie zwrócił granul {CFG['short_name']} w oknie czasowym.")
-        temps_lists, last_pres = {}, CFG["target_pressure_hpa"]
+        print(f"[worker] CMR: {len(grans)} granul; pobieram do {CFG['max_granules']}, filtruję Polskę po pobraniu.")
+        temps_lists, last_pres, hits = {}, CFG["target_pressure_hpa"], 0
         with tempfile.TemporaryDirectory() as td:
-            for g in grans:
+            for g in grans[:CFG["max_granules"]]:
                 fp = os.path.join(td, os.path.basename(g["href"]))
-                r = s.get(g["href"], timeout=300, allow_redirects=True)
-                r.raise_for_status()
-                with open(fp, "wb") as fh:
-                    fh.write(r.content)
-                vals, last_pres = temps_over_poland(fp)
-                if vals.size:
-                    temps_lists.setdefault(g["date"], []).extend(vals.tolist())
+                try:
+                    r = s.get(g["href"], timeout=180, allow_redirects=True)
+                    r.raise_for_status()
+                    with open(fp, "wb") as fh:
+                        fh.write(r.content)
+                    vals, last_pres = temps_over_poland(fp)
+                    if vals.size:
+                        temps_lists.setdefault(g["date"], []).extend(vals.tolist())
+                        hits += 1
+                except Exception as ex:
+                    print(f"[worker] pominięto granulę ({ex})", file=sys.stderr)
+                finally:
+                    if os.path.exists(fp):
+                        os.remove(fp)
+        print(f"[worker] przeloty z profilami nad Polską: {hits}")
         temps = {d: sum(v) / len(v) for d, v in temps_lists.items() if v}
         last_n = sum(len(v) for v in temps_lists.values())
         if not temps:
