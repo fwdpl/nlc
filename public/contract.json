@@ -1,6 +1,6 @@
 {
   "schema_version": "2.0",
-  "generated_at": "2026-06-22T18:16:39Z",
+  "generated_at": "2026-06-23T12:25:02Z",
   "region": "PL",
   "source": {
     "temperature": "Aura MLS ML2T_NRT v",
@@ -8,17 +8,17 @@
     "solar_activity": "NOAA SWPC F10.7"
   },
   "mesopause": {
-    "temperature_k": 164.1,
+    "temperature_k": 148.9,
     "frost_point_k": 145.8,
-    "trend_k_per_day": 5.64,
+    "trend_k_per_day": -5.89,
     "pressure_hpa": 0.00464,
     "altitude_km": 83,
-    "observed_at": "2026-06-22T01:40:00Z",
-    "data_age_hours": 16.6,
-    "n_profiles": 9
+    "observed_at": "2026-06-23T01:40:00Z",
+    "data_age_hours": 10.8,
+    "n_profiles": 8
   },
   "solar": {
-    "f107": 128.0
+    "f107": 122.0
   },
   "season": {
     "in_season": true,
@@ -26,9 +26,9 @@
     "factor": 1.0
   },
   "factors": {
-    "f_temp": 0.0,
-    "f_trend": 0.0,
-    "f_solar": 0.42
+    "f_temp": 0.152,
+    "f_trend": 1.0,
+    "f_solar": 0.48
   },
   "weights": {
     "w_T": 0.55,
