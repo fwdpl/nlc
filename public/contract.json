@@ -1,6 +1,6 @@
 {
   "schema_version": "2.0",
-  "generated_at": "2026-07-12T09:30:00Z",
+  "generated_at": "2026-07-12T14:42:36Z",
   "region": "PL",
   "source": {
     "temperature": "Aura MLS ML2T_NRT v",
@@ -14,7 +14,7 @@
     "pressure_hpa": 0.00464,
     "altitude_km": 83,
     "observed_at": "2026-07-09T01:40:00Z",
-    "data_age_hours": 79.8,
+    "data_age_hours": 85.0,
     "n_profiles": 4
   },
   "solar": {
@@ -37,5 +37,5 @@
     "w_s": 0.1
   },
   "recent_sightings": [],
-  "notes": "Wygenerowane automatycznie. f_lat liczony po stronie klienta."
+  "notes": "STALE: brak świeżych danych MLS — odtworzono poprzedni odczyt, sezon zaktualizowany."
 }
