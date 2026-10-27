@@ -1,6 +1,6 @@
 {
   "schema_version": "2.0",
-  "generated_at": "2026-10-27T07:33:15Z",
+  "generated_at": "2026-10-27T16:17:07Z",
   "region": "PL",
   "source": {
     "temperature": "Aura MLS ML2T_NRT v",
@@ -14,7 +14,7 @@
     "pressure_hpa": 0.00464,
     "altitude_km": 83,
     "observed_at": "2026-07-09T01:40:00Z",
-    "data_age_hours": 2645.9,
+    "data_age_hours": 2654.6,
     "n_profiles": 4
   },
   "solar": {
