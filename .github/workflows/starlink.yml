@@ -1,0 +1,356 @@
+/**
+ * 2026-11-15 · v1.1 · fw-starlink-snippet
+ *
+ * v1.1 (2026-11-15): wpisane ID wpisu (4459) i adres danych z repo fwdpl/nlc (jsDelivr).
+ *
+ * fotografwdrodze.pl — silnik STARLINK (wpis /jak-odnalezc-satelity-starlink-nad-polska/)
+ * WPCode: snippet PHP, „Run Everywhere”. Po wklejeniu: „Zaktualizuj” (nie sam przełącznik! — Bug L1).
+ *
+ * OSOBNY snippet — nie współdzieli funkcji ani plików z innymi silnikami.
+ * Prefiksy: funkcje fw_starlink_, klasy CSS fws-.
+ *
+ * Dane: starlink.json z generate_starlink_data.py (co 3 h, GitHub Actions, repo fwdpl/nlc).
+ *   Źródło 1: FW_STARLINK_JSON_URL (jsDelivr) — pobierane przez serwer co godzinę,
+ *             ostatnia poprawna kopia trzymana w opcji WP (awaria źródła ≠ pusta strona).
+ *   Źródło 2 (zapasowe): /wp-content/uploads/starlink/starlink.json (wgrany ręcznie FTP-em).
+ * JS (/uploads/starlink/starlink-engine.js) dodatkowo sam pobiera świeży JSON w przeglądarce,
+ * więc stara wersja strony z cache WP Rocket nie pokazuje starych godzin.
+ *
+ * Shortcode'y:
+ *   [fw_starlink_now]        — karta „Czy dziś wyjść?” + wybór miasta + „Dla fotografów”
+ *   [fw_starlink_passes]     — tabela widocznych pociągów (7 dni) dla miasta
+ *   [fw_starlink_map]        — mapa przelotu nad Polską (SVG)
+ *   [fw_starlink_launches]   — najbliższe starty Starlink + „czy zobaczymy z Polski?”
+ *   [fw_starlink_intro]      — jedno zdanie o najbliższym pociągu (pod H1)
+ *   [fw_starlink_season]     — zdanie o oknach widoczności o tej porze roku
+ *   [fw_starlink_count]      — liczba satelitów Starlink na orbicie (inline)
+ *   [fw_starlink_updated]    — data i godzina danych (inline)
+ *   [fw_starlink_test]       — diagnostyka (usunąć z treści po teście)
+ *
+ * Meta description i OG/Twitter: nadpisywane dynamicznie (filtr Yoasta, nie zmienna %%…%% — lekcja L3).
+ * Bez .ics i bez powiadomień (decyzje 29.09 i 02.10.2026).
+ */
+
+if ( ! defined( 'ABSPATH' ) ) { exit; }
+
+/* === KONFIGURACJA ================================================== */
+if ( ! defined( 'FW_STARLINK_VER' ) )      { define( 'FW_STARLINK_VER', '1.1.0' ); }  // podbij przy każdej zmianie JS/CSS
+if ( ! defined( 'FW_STARLINK_POST_ID' ) )  { define( 'FW_STARLINK_POST_ID', 4459 ); } // /jak-odnalezc-satelity-starlink-nad-polska/
+if ( ! defined( 'FW_STARLINK_JSON_URL' ) ) { define( 'FW_STARLINK_JSON_URL', 'https://cdn.jsdelivr.net/gh/fwdpl/nlc@main/starlink/starlink.json' ); }
+if ( ! defined( 'FW_STARLINK_DEFAULT_CITY' ) ) { define( 'FW_STARLINK_DEFAULT_CITY', 'poznan' ); }
+if ( ! defined( 'FW_STARLINK_TZ' ) )       { define( 'FW_STARLINK_TZ', 'Europe/Warsaw' ); }
+
+function fw_starlink_dir() { return WP_CONTENT_DIR . '/uploads/starlink'; }
+function fw_starlink_url() { return content_url( '/uploads/starlink' ); }
+
+/* === DANE ========================================================== */
+
+/** Pobiera JSON ze źródła; poprawny zapisuje jako „ostatni dobry”. */
+function fw_starlink_fetch() {
+	$json = null;
+	if ( FW_STARLINK_JSON_URL ) {
+		$r = wp_remote_get( add_query_arg( 't', floor( time() / 600 ), FW_STARLINK_JSON_URL ), array( 'timeout' => 15 ) );
+		if ( ! is_wp_error( $r ) && 200 === wp_remote_retrieve_response_code( $r ) ) {
+			$json = json_decode( wp_remote_retrieve_body( $r ), true );
+		}
+	}
+	if ( ! fw_starlink_valid( $json ) ) {
+		$p = fw_starlink_dir() . '/starlink.json';
+		if ( file_exists( $p ) ) { $json = json_decode( (string) file_get_contents( $p ), true ); }
+	}
+	if ( fw_starlink_valid( $json ) ) {
+		$old = get_option( 'fw_starlink_last' );
+		if ( ! fw_starlink_valid( $old ) || strtotime( $json['generated_at'] ) >= strtotime( $old['generated_at'] ) ) {
+			update_option( 'fw_starlink_last', $json, false );
+		}
+	}
+	set_transient( 'fw_starlink_fresh', 1, 30 * MINUTE_IN_SECONDS );
+}
+function fw_starlink_valid( $j ) {
+	return is_array( $j ) && ! empty( $j['generated_at'] ) && isset( $j['passes'] ) && is_array( $j['passes'] );
+}
+function fw_starlink_data() {
+	static $d = null;
+	if ( null !== $d ) { return $d; }
+	if ( ! get_transient( 'fw_starlink_fresh' ) ) { fw_starlink_fetch(); }
+	$d = get_option( 'fw_starlink_last' );
+	if ( ! fw_starlink_valid( $d ) ) { $d = array(); }
+	return $d;
+}
+
+/** Zegar w jednym miejscu (filtr fw_starlink_now — tylko do testów). */
+function fw_starlink_now() { return (int) apply_filters( 'fw_starlink_now', time() ); }
+
+function fw_starlink_events( $city ) {
+	$d = fw_starlink_data();
+	if ( empty( $d['passes'][ $city ] ) ) { return array(); }
+	$now = fw_starlink_now();
+	return array_values( array_filter( $d['passes'][ $city ], function ( $e ) use ( $now ) {
+		return strtotime( $e['end'] ) > $now - 60;
+	} ) );
+}
+function fw_starlink_upcoming() {
+	$d = fw_starlink_data();
+	$now = fw_starlink_now();
+	return array_values( array_filter( isset( $d['launches_upcoming'] ) ? $d['launches_upcoming'] : array(), function ( $l ) use ( $now ) {
+		return strtotime( $l['net'] ) > $now - 6 * HOUR_IN_SECONDS;
+	} ) );
+}
+
+/* === FORMATOWANIE ================================================== */
+
+function fw_starlink_dt( $iso ) { return ( new DateTime( $iso ) )->setTimezone( new DateTimeZone( FW_STARLINK_TZ ) ); }
+function fw_starlink_hm( $iso ) { return fw_starlink_dt( $iso )->format( 'G:i' ); }
+function fw_starlink_months() {
+	return array( 1 => 'stycznia', 'lutego', 'marca', 'kwietnia', 'maja', 'czerwca', 'lipca', 'sierpnia', 'września', 'października', 'listopada', 'grudnia' );
+}
+function fw_starlink_date_pl( $iso ) {
+	$t = fw_starlink_dt( $iso ); $m = fw_starlink_months();
+	return $t->format( 'j' ) . ' ' . $m[ (int) $t->format( 'n' ) ];
+}
+function fw_starlink_wd( $iso, $short = false ) {
+	$w = $short ? array( 'nd', 'pn', 'wt', 'śr', 'czw', 'pt', 'sob' ) : array( 'niedziela', 'poniedziałek', 'wtorek', 'środa', 'czwartek', 'piątek', 'sobota' );
+	return $w[ (int) fw_starlink_dt( $iso )->format( 'w' ) ];
+}
+function fw_starlink_ins( $k ) {
+	$a = array( 'bialystok' => 'Białymstokiem', 'gdansk' => 'Gdańskiem', 'krakow' => 'Krakowem', 'lodz' => 'Łodzią', 'lublin' => 'Lublinem',
+		'poznan' => 'Poznaniem', 'rzeszow' => 'Rzeszowem', 'szczecin' => 'Szczecinem', 'warszawa' => 'Warszawą', 'wroclaw' => 'Wrocławiem' );
+	return isset( $a[ $k ] ) ? $a[ $k ] : $k;
+}
+function fw_starlink_short( $n ) { return preg_replace( '/^Starlink Group /', 'grupa ', (string) $n ); }
+/** „dziś o 19:42” / „jutro rano o 5:15” / „sobota, 11 października, 5:15” */
+function fw_starlink_when( $iso ) {
+	$tz  = new DateTimeZone( FW_STARLINK_TZ );
+	$s   = fw_starlink_dt( $iso );
+	$now = ( new DateTime( '@' . fw_starlink_now() ) )->setTimezone( $tz );
+	$nk  = function ( DateTime $d ) { $c = clone $d; return $c->modify( '-12 hours' )->format( 'Ymd' ); };
+	if ( $nk( $s ) === $nk( $now ) ) {
+		if ( (int) $s->format( 'G' ) >= 12 ) { return 'dziś o ' . $s->format( 'G:i' ); }
+		return ( (int) $now->format( 'G' ) < 12 ? 'dziś rano o ' : 'jutro rano o ' ) . $s->format( 'G:i' );
+	}
+	return fw_starlink_wd( $iso ) . ', ' . fw_starlink_date_pl( $iso ) . ', ' . $s->format( 'G:i' );
+}
+function fw_starlink_launch_when( $l ) {
+	$approx = in_array( $l['status'], array( 'TBD', 'TBC' ), true );
+	return fw_starlink_wd( $l['net'], true ) . ' ' . fw_starlink_date_pl( $l['net'] ) . ( $approx ? '' : ', ' . fw_starlink_hm( $l['net'] ) );
+}
+
+/* === TEKSTY DLA SEO (render serwera; JS przelicza na żywo) ========== */
+
+function fw_starlink_intro_text( $html = true ) {
+	$d = fw_starlink_data();
+	if ( ! $d ) { return ''; }
+	$c  = FW_STARLINK_DEFAULT_CITY;
+	$ev = fw_starlink_events( $c );
+	$b  = $html ? array( '<strong>', '</strong>' ) : array( '', '' );
+	if ( $ev ) {
+		$e = $ev[0];
+		return 'Najbliższy widoczny pociąg Starlink nad ' . fw_starlink_ins( $c ) . ': ' . $b[0] . fw_starlink_when( $e['start'] ) . $b[1]
+			. ', z kierunku ' . $e['from_pl'] . ', najwyżej ' . (int) $e['max_alt'] . '° nad horyzontem.';
+	}
+	foreach ( fw_starlink_upcoming() as $l ) {
+		if ( 'yes' === $l['verdict'] ) {
+			return 'Teraz żaden świeży pociąg nie przelatuje nad Polską w ciemności. Najbliższa szansa: kilka nocy po starcie '
+				. $b[0] . fw_starlink_short( $l['name'] ) . ' (' . fw_starlink_launch_when( $l ) . ')' . $b[1] . '.';
+		}
+	}
+	return 'Teraz żaden świeży pociąg Starlink nie przelatuje nad Polską w ciemności, a SpaceX nie ogłosił startu, który dałby taki przelot.';
+}
+
+function fw_starlink_meta() {
+	$c  = FW_STARLINK_DEFAULT_CITY;
+	$ev = fw_starlink_events( $c );
+	if ( $ev ) {
+		$e = $ev[0];
+		return 'Najbliższy widoczny pociąg Starlink nad Polską: ' . fw_starlink_date_pl( $e['start'] ) . ', ' . fw_starlink_hm( $e['start'] )
+			. ' (Poznań). Godziny dla 10 miast, kierunek, mapa przelotu i najbliższe starty SpaceX.';
+	}
+	foreach ( fw_starlink_upcoming() as $l ) {
+		if ( 'yes' === $l['verdict'] ) {
+			return 'Najbliższy start Starlinków widocznych z Polski: ' . fw_starlink_date_pl( $l['net'] )
+				. '. Kiedy pociąg satelitów będzie nad Polską, godziny dla 10 miast i mapa przelotu.';
+		}
+	}
+	return 'Kiedy pociąg satelitów Starlink będzie nad Polską? Godziny przelotów dla 10 miast, mapa przelotu i najbliższe starty SpaceX — aktualizowane co 3 godziny.';
+}
+
+/* === WSPÓLNE KAWAŁKI =============================================== */
+
+function fw_starlink_city_select( $sfx ) {
+	$d = fw_starlink_data();
+	if ( empty( $d['cities'] ) ) { return ''; }
+	$o = '';
+	foreach ( $d['cities'] as $k => $c ) {
+		$o .= '<option value="' . esc_attr( $k ) . '"' . selected( $k, FW_STARLINK_DEFAULT_CITY, false ) . '>' . esc_html( $c['name'] ) . '</option>';
+	}
+	$id = 'fws-city-' . $sfx;
+	return '<div class="fws-city"><label for="' . esc_attr( $id ) . '">Miasto:</label> '
+		. '<select id="' . esc_attr( $id ) . '" data-fws-city-select>' . $o . '</select> '
+		. '<button type="button" class="fws-btn" data-fws-geo hidden>Moja lokalizacja</button>'
+		. '<span class="fws-city__msg" data-fws-geo-msg aria-live="polite"></span></div>';
+}
+function fw_starlink_frame( $kind, $inner, $select = true ) {
+	fw_starlink_enqueue();
+	return '<div class="fws-frame" data-fws="' . esc_attr( $kind ) . '">' . ( $select ? fw_starlink_city_select( $kind ) : '' ) . $inner . '</div>';
+}
+
+/* === SHORTCODE'Y =================================================== */
+
+add_shortcode( 'fw_starlink_now', function () {
+	$ev  = fw_starlink_events( FW_STARLINK_DEFAULT_CITY );
+	$txt = '<div class="fws-state"><p class="fws-kicker">Starlink nad Polską</p><h3 class="fws-head">'
+		. ( $ev ? esc_html( ucfirst( fw_starlink_when( $ev[0]['start'] ) ) ) : 'Zostań w domu' ) . '</h3><p>'
+		. wp_kses_post( fw_starlink_intro_text() ) . '</p></div>';
+	return fw_starlink_frame( 'now', '<div data-fws-part="card">' . $txt . '</div>' );
+} );
+
+add_shortcode( 'fw_starlink_passes', function () {
+	$ev = fw_starlink_events( FW_STARLINK_DEFAULT_CITY );
+	if ( ! $ev ) {
+		$t = '<p class="fws-empty">W najbliższych 7 dniach nad Poznaniem nie przeleci w ciemności żaden świeży pociąg Starlink.</p>';
+	} else {
+		$t = '<div class="fws-list-wrap"><table class="fws-list"><caption>Widoczne pociągi Starlink · Poznań</caption><thead><tr>'
+			. '<th scope="col">Kiedy</th><th scope="col">Skąd → dokąd</th><th scope="col">Najwyżej</th><th scope="col">Pociąg</th></tr></thead><tbody>';
+		foreach ( $ev as $e ) {
+			$t .= '<tr><td class="fws-nw"><strong>' . esc_html( fw_starlink_wd( $e['start'], true ) . ' ' . fw_starlink_dt( $e['start'] )->format( 'j.m' ) ) . '</strong>'
+				. '<span class="fws-sub">' . esc_html( fw_starlink_hm( $e['start'] ) . '–' . fw_starlink_hm( $e['end'] ) ) . '</span></td>'
+				. '<td class="fws-nw">' . esc_html( $e['from'] . ' → ' . $e['to'] ) . '</td>'
+				. '<td class="fws-nw">' . (int) $e['max_alt'] . '°</td>'
+				. '<td>' . esc_html( fw_starlink_short( $e['group'] ) ) . '</td></tr>';
+		}
+		$t .= '</tbody></table></div>';
+	}
+	return fw_starlink_frame( 'passes', '<div data-fws-part="table">' . $t . '</div>'
+		. '<p class="fws-src">Pokazujemy przeloty pociągów (satelitów z jednego startu, lecących jeden za drugim) do 10 dni po starcie, '
+		. 'gdy satelity są oświetlone przez Słońce, a u Ciebie jest już ciemno (Słońce ≥ 6° pod horyzontem), i tylko te, które wznoszą się '
+		. 'co najmniej 20° nad horyzont. Gwiazdki to ocena, nie jasność: liczą się wysokość przelotu, wiek pociągu i to, jak ciemne jest niebo. '
+		. 'Obliczenia własne (SGP4, dane orbit: CelesTrak; starty: Launch Library 2), aktualizacja co 3 godziny. '
+		. 'Satelity tuż po starcie manewrują, więc godziny podajemy z dokładnością do kilku minut.</p>' );
+} );
+
+add_shortcode( 'fw_starlink_map', function () {
+	return fw_starlink_frame( 'map', '<div data-fws-part="map"><p class="fws-map__cap">Mapa przelotu rysuje się w przeglądarce.</p></div>', false );
+} );
+
+add_shortcode( 'fw_starlink_launches', function () {
+	$up = fw_starlink_upcoming();
+	if ( ! $up ) {
+		$t = '<p class="fws-empty">Brak zaplanowanych startów Starlink w najbliższych dwóch tygodniach.</p>';
+	} else {
+		$t = '<div class="fws-list-wrap"><table class="fws-list fws-list--launch"><caption>Najbliższe starty Starlink</caption><thead><tr>'
+			. '<th scope="col">Start (czas polski)</th><th scope="col">Misja</th><th scope="col">Czy zobaczymy z Polski?</th></tr></thead><tbody>';
+		foreach ( $up as $l ) {
+			$t .= '<tr><td class="fws-nw"><strong>' . esc_html( fw_starlink_launch_when( $l ) ) . '</strong></td>'
+				. '<td>' . esc_html( fw_starlink_short( $l['name'] ) ) . '<span class="fws-sub">' . esc_html( $l['site'] ) . '</span></td>'
+				. '<td class="fws-verdict fws-verdict--' . esc_attr( $l['verdict'] ) . '">' . esc_html( $l['verdict_pl'] ) . '</td></tr>';
+		}
+		$t .= '</tbody></table></div>';
+	}
+	return fw_starlink_frame( 'launches', '<div data-fws-part="table">' . $t . '</div>'
+		. '<p class="fws-src">Daty startów: Launch Library 2 (The Space Devs). Starty często się przesuwają — tabela aktualizuje się sama. '
+		. '„Czy zobaczymy” zależy od nachylenia orbity: przy ok. 53° i więcej pociąg przelatuje wysoko nad Polską, przy 43° — najwyżej nisko nad południowym horyzontem.</p>', false );
+} );
+
+add_shortcode( 'fw_starlink_intro', function () {
+	fw_starlink_enqueue();
+	return '<p class="fws-intro" data-fws-live="intro">' . wp_kses_post( fw_starlink_intro_text() ) . '</p>';
+} );
+add_shortcode( 'fw_starlink_season', function () {
+	fw_starlink_enqueue();
+	return '<span data-fws-live="season"></span>';
+} );
+add_shortcode( 'fw_starlink_count', function () {
+	fw_starlink_enqueue();
+	$d = fw_starlink_data();
+	$n = ! empty( $d['constellation']['count'] ) ? number_format( round( $d['constellation']['count'] / 100 ) * 100, 0, ',', "\xC2\xA0" ) : '';
+	return '<span class="fws-inline" data-fws-live="count">' . ( $n ? 'ok. <strong>' . esc_html( $n ) . '</strong>' : 'kilka tysięcy' ) . '</span>';
+} );
+add_shortcode( 'fw_starlink_updated', function () {
+	fw_starlink_enqueue();
+	$d = fw_starlink_data();
+	return '<span class="fws-inline" data-fws-live="updated">' . ( $d ? esc_html( fw_starlink_date_pl( $d['generated_at'] ) . ', ' . fw_starlink_hm( $d['generated_at'] ) ) : '' ) . '</span>';
+} );
+
+/* === ASSETY ======================================================== */
+
+function fw_starlink_is_current() {
+	if ( ! is_singular() ) { return false; }
+	if ( FW_STARLINK_POST_ID ) { return (int) get_queried_object_id() === (int) FW_STARLINK_POST_ID; }
+	$o = get_queried_object();
+	return $o instanceof WP_Post && has_shortcode( (string) $o->post_content, 'fw_starlink_now' );
+}
+function fw_starlink_enqueue() {
+	static $done = false;
+	if ( $done ) { return; }
+	$done = true;
+	$d = fw_starlink_data();
+	wp_enqueue_style( 'fw-starlink', fw_starlink_url() . '/starlink.css', array(), FW_STARLINK_VER );
+	wp_enqueue_script( 'fw-starlink', fw_starlink_url() . '/starlink-engine.js', array(), FW_STARLINK_VER, true );
+	$client = array(
+		'data'        => $d ? $d : null,
+		'src'         => FW_STARLINK_JSON_URL,
+		'defaultCity' => FW_STARLINK_DEFAULT_CITY,
+	);
+	if ( $client['data'] ) { unset( $client['data']['log'] ); }
+	wp_add_inline_script( 'fw-starlink', 'window.FW_STARLINK=' . wp_json_encode( $client, JSON_UNESCAPED_UNICODE ) . ';', 'before' );
+}
+add_action( 'wp_enqueue_scripts', function () {
+	if ( fw_starlink_is_current() ) { fw_starlink_enqueue(); }
+} );
+
+/* === META (Yoast) ================================================== */
+foreach ( array( 'wpseo_metadesc', 'wpseo_opengraph_desc', 'wpseo_twitter_description' ) as $fw_starlink_f ) {
+	add_filter( $fw_starlink_f, function ( $t ) {
+		return ( fw_starlink_is_current() && fw_starlink_data() ) ? fw_starlink_meta() : $t;
+	}, 20 );
+}
+
+/* === CRON: co godzinę — świeże dane; gdy zmienił się stan, czyścimy cache wpisu ===
+ * Podpis stanu = najbliższe pociągi w Poznaniu + lista startów. Bez zmian = bez czyszczenia. */
+add_action( 'init', function () {
+	if ( ! wp_next_scheduled( 'fw_starlink_hourly' ) ) {
+		wp_schedule_event( time() + 300, 'hourly', 'fw_starlink_hourly' );
+	}
+} );
+add_action( 'fw_starlink_hourly', function () {
+	delete_transient( 'fw_starlink_fresh' );
+	fw_starlink_fetch();
+	$d = get_option( 'fw_starlink_last' );
+	if ( ! fw_starlink_valid( $d ) ) { return; }
+	$sig = array();
+	foreach ( (array) $d['passes'][ FW_STARLINK_DEFAULT_CITY ] as $e ) { $sig[] = $e['start']; }
+	foreach ( (array) $d['launches_upcoming'] as $l ) { $sig[] = $l['name'] . $l['net'] . $l['status']; }
+	$sig = md5( implode( '|', $sig ) . '|' . wp_date( 'Ymd' ) );   // + data: „dziś/jutro” w tekście SEO
+	if ( get_option( 'fw_starlink_sig' ) === $sig ) { return; }
+	update_option( 'fw_starlink_sig', $sig, false );
+	if ( FW_STARLINK_POST_ID ) {
+		wp_update_post( array( 'ID' => (int) FW_STARLINK_POST_ID ) );       // świeża data „Aktualizacja”
+		if ( function_exists( 'rocket_clean_post' ) ) { rocket_clean_post( (int) FW_STARLINK_POST_ID ); }
+	}
+} );
+
+/* === [fw_starlink_test] — diagnostyka ============================== */
+add_shortcode( 'fw_starlink_test', function () {
+	delete_transient( 'fw_starlink_fresh' );
+	$d   = fw_starlink_data();
+	$loc = fw_starlink_dir() . '/starlink.json';
+	$ev  = fw_starlink_events( FW_STARLINK_DEFAULT_CITY );
+	$rows = array(
+		'Snippet wykonuje się'      => 'TAK (v' . FW_STARLINK_VER . ')',
+		'Źródło JSON (URL)'         => FW_STARLINK_JSON_URL ? FW_STARLINK_JSON_URL : '(nieustawione)',
+		'Plik zapasowy'             => file_exists( $loc ) ? 'TAK' : 'NIE',
+		'Dane wygenerowane'         => $d ? $d['generated_at'] . ' (generator v' . $d['version'] . ')' : 'BRAK DANYCH',
+		'Grup na orbicie'           => $d ? count( $d['groups'] ) : 0,
+		'Starty nadchodzące'        => $d ? count( $d['launches_upcoming'] ) : 0,
+		'Pociągi (Poznań, 7 dni)'   => count( $ev ),
+		'Najbliższy (Poznań)'       => $ev ? fw_starlink_when( $ev[0]['start'] ) : '—',
+		'Meta description'          => $d ? fw_starlink_meta() : '—',
+		'ID tego wpisu'             => get_queried_object_id() . ( FW_STARLINK_POST_ID ? ' (FW_STARLINK_POST_ID = ' . FW_STARLINK_POST_ID . ')' : ' (FW_STARLINK_POST_ID nieustawione)' ),
+		'Ten wpis rozpoznany'       => fw_starlink_is_current() ? 'TAK' : 'NIE — sprawdź, czy ID z wiersza wyżej = FW_STARLINK_POST_ID',
+		'Katalog assetów'           => fw_starlink_url(),
+	);
+	$h = '<div style="border:2px solid #4a4a4a;padding:1em;margin:1em 0;font:14px/1.5 monospace">';
+	$h .= '<strong>fw_starlink — autotest</strong><br>';
+	foreach ( $rows as $k => $v ) { $h .= esc_html( $k ) . ': <strong>' . esc_html( (string) $v ) . '</strong><br>'; }
+	return $h . '</div>';
+} );
