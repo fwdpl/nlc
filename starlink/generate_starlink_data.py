@@ -1,4 +1,8 @@
-"""2026-10-07 · v1.0 · generate_starlink_data.py
+"""2026-11-16 · v1.1 · generate_starlink_data.py
+v1.1: pole net_precision przy startach (exact/day/week/month/coarse) z Launch Library 2 — dla startów
+      bez ustalonego dnia LL2 podaje NET = koniec miesiąca; karta pokazuje wtedy sam miesiąc.
+      Starty z precyzją miesiąca/tygodnia trzymamy na liście do 45 dni (NET to górna granica).
+      User-Agent bez adresu e-mail (adres strony zamiast kontaktu).
 Generator danych dla wpisu /jak-odnalezc-satelity-starlink-nad-polska/ (silnik fws-).
 
 Co robi (uruchamiany co 3 h, np. w GitHub Actions):
@@ -44,10 +48,10 @@ from zoneinfo import ZoneInfo
 import numpy as np
 from skyfield.api import load, wgs84, EarthSatellite, Loader
 
-VERSION = "1.0"
+VERSION = "1.1"
 OUT_PATH = "starlink.json"
 TZ_PL = ZoneInfo("Europe/Warsaw")
-UA = "fotografwdrodze.pl starlink-widget (kontakt: social@bakutis.pl)"
+UA = "fotografwdrodze.pl starlink-widget (+https://fotografwdrodze.pl/)"
 
 MAX_AGE_DAYS = 10          # pociąg starszy niż tyle dni = już się rozjechał
 PREDICT_DAYS = 7           # ile dni do przodu
@@ -59,6 +63,7 @@ TRAIN_GAP_S = 240          # max przerwa między kolejnymi satelitami w pociągu
 MIN_TRAIN_SATS = 5
 MAX_SATS_PER_GROUP = 12    # próbka satelitów z grupy (zawsze z pierwszym i ostatnim) — szybkość
 LAUNCH_HORIZON_DAYS = 14   # starty w liście „najbliższe starty”
+LAUNCH_HORIZON_COARSE_DAYS = 45   # gdy znany jest tylko tydzień/miesiąc
 SHELL_HEIGHT_KM = 350      # wysokość do zdania o oknach oświetlenia (świeże pociągi ~280–360 km)
 
 # Nachylenie wg numeru grupy — HEURYSTYKA na czas przed startem, gdy nie ma danych orbity.
@@ -149,6 +154,23 @@ def group_from_name(name):
         return None, None, None
     g, n = int(m.group(1)), int(m.group(2))
     return g, n, f"starlink-g{g}-{n}"
+
+
+def net_precision(L):
+    """Precyzja daty startu z LL2 → exact / day / week / month / coarse."""
+    name = ((L.get("net_precision") or {}).get("name") or "").lower()
+    if not name:
+        st = (L.get("status") or {}).get("abbrev")
+        return "day" if st in ("TBD", "TBC") else "exact"
+    if any(w in name for w in ("second", "minute", "hour")):
+        return "exact"
+    if any(w in name for w in ("day", "morning", "afternoon", "evening", "night")):
+        return "day"
+    if "week" in name:
+        return "week"
+    if "month" in name:
+        return "month"
+    return "coarse"
 
 
 def visibility_verdict(inc):
@@ -336,12 +358,14 @@ def main():
                 "net": L.get("net"), "status": (L.get("status") or {}).get("abbrev"),
                 "status_name": (L.get("status") or {}).get("name"),
                 "site": ((pad.get("location") or {}).get("name") or "").split(",")[0],
+                "net_precision": net_precision(L),
                 "group": g, "num": n, "file": f, "inc": None, "inc_source": None}
 
     upcoming = [launch_row(L) for L in up.get("results", [])
                 if "starlink" in (L.get("name") or "").lower()]
     upcoming = [r for r in upcoming if r["net"] and
-                parse_iso(r["net"]) <= now + timedelta(days=LAUNCH_HORIZON_DAYS) and
+                parse_iso(r["net"]) <= now + timedelta(days=(LAUNCH_HORIZON_COARSE_DAYS
+                    if r["net_precision"] in ("week", "month", "coarse") else LAUNCH_HORIZON_DAYS)) and
                 parse_iso(r["net"]) >= now - timedelta(hours=6)]
     recent = [launch_row(L) for L in prev.get("results", [])
               if "starlink" in (L.get("name") or "").lower()
@@ -428,7 +452,7 @@ def main():
             count = {"count": len(allsl), "as_of": now.strftime("%Y-%m-%dT%H:%M:%SZ"), "source": "CelesTrak"}
 
     def clean(r):
-        return {k: r.get(k) for k in ("name", "net", "status", "status_name", "site", "group", "inc",
+        return {k: r.get(k) for k in ("name", "net", "net_precision", "status", "status_name", "site", "group", "inc",
                                       "inc_source", "verdict", "verdict_pl")}
 
     out = {
