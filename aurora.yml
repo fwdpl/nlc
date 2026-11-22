@@ -1,0 +1,79 @@
+# 2026-11-20 · v1.0 · aurora.yml
+# GitHub Actions: co 15 minut liczy stan zorzy polarnej i zapisuje aurora/aurora.json
+# (+ raz na dobę aurora/aurora-history.json).
+# Plik wgrać do repozytorium fwdpl/nlc jako: .github/workflows/aurora.yml
+# Skrypt generatora: aurora/generate_aurora_data.py (w tym samym repozytorium).
+# Blog czyta wynik z: https://cdn.jsdelivr.net/gh/fwdpl/nlc@main/aurora/aurora.json
+# Uwaga: GitHub uruchamia harmonogram z opóźnieniem 5–20 min w godzinach szczytu — „co 15 min” to cel, nie gwarancja.
+
+name: aurora
+
+on:
+  schedule:
+    - cron: "4,19,34,49 * * * *"   # co 15 min, nie o pełnej godzinie (mniejsze kolejki)
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+concurrency:
+  group: aurora
+  cancel-in-progress: false
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Zależności
+        run: pip install skyfield skyfield-data numpy
+
+      - name: Generator
+        working-directory: aurora
+        run: >
+          python -W ignore generate_aurora_data.py
+          --prev aurora.json --prev-history aurora-history.json
+          --out aurora.new.json --out-history aurora-history.new.json
+
+      - name: Zapis, jeśli dane są poprawne
+        working-directory: aurora
+        run: |
+          python - <<'EOF'
+          import json, os, sys
+          d = json.load(open("aurora.new.json", encoding="utf-8"))
+          ok = d.get("generated_at") and isinstance(d.get("nights"), dict) and len(d["nights"]) == 10 and d.get("kp_blocks")
+          if not ok:
+              sys.exit(1)
+          os.replace("aurora.new.json", "aurora.json")
+          if os.path.exists("aurora-history.new.json"):
+              h = json.load(open("aurora-history.new.json", encoding="utf-8"))
+              if h.get("nights") and h.get("years"):
+                  os.replace("aurora-history.new.json", "aurora-history.json")
+          EOF
+
+      - name: Commit
+        id: commit
+        run: |
+          git config user.name "aurora-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add aurora/aurora.json aurora/aurora-history.json 2>/dev/null || git add aurora/aurora.json
+          git diff --cached --quiet && echo "changed=0" >> "$GITHUB_OUTPUT" && exit 0
+          echo "hist=$(git diff --cached --name-only | grep -c history || true)" >> "$GITHUB_OUTPUT"
+          git commit -m "aurora: dane $(date -u +%Y-%m-%dT%H:%MZ)"
+          for i in 1 2 3; do git pull --rebase && git push && break; sleep 10; done
+          echo "changed=1" >> "$GITHUB_OUTPUT"
+
+      - name: Odśwież jsDelivr
+        if: steps.commit.outputs.changed == '1'
+        run: |
+          curl -s "https://purge.jsdelivr.net/gh/${GITHUB_REPOSITORY}@main/aurora/aurora.json" || true
+          if [ "${{ steps.commit.outputs.hist }}" != "0" ]; then
+            curl -s "https://purge.jsdelivr.net/gh/${GITHUB_REPOSITORY}@main/aurora/aurora-history.json" || true
+          fi
